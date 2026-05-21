@@ -1,0 +1,73 @@
+Assignment Task:
+
+file txt file with minimum 100 records.
+-----------------------------------------
+
+{   "memberId": "12345",   "firstname": "value1",   "lastname": "value2",   "dob": "value3",   "rx": "RX002", "drugName":"",  "description": "Medicine description" }
+{   "memberId": "12346",   "firstname": "value1",   "lastname": "value2",   "dob": "value3",   "rx": "RX003",   "description": "Medicine description" }
+{   "memberId": "12347",   "firstname": "value1",   "lastname": "value2",   "dob": "value3",   "rx": "RX004",   "description": "Medicine description" }
+{   "memberId": "12345",   "firstname": "value1",   "lastname": "value2",   "dob": "value3",   "rx": "RX005",   "description": "Medicine description" }
+{   "memberId": "12347",   "firstname": "value1",   "lastname": "value2",   "dob": "value3",   "rx": "RX006",   "description": "Medicine description" }
+
+inputfilelocation -
+bundle_key  -- memberId+dob
+
+bundled_records:
+--------------------
+{
+  "memberId": "12345",
+  "firstname": "value1",
+  "lastname": "value2",
+  "dob": "value3",
+  "rxInfo": [
+    {
+      "rx": "RX005",
+      "description": "Medicine description"
+    },
+    {
+      "rx": "RX002",
+      "description": "Medicine description"
+    }
+  ]
+}
+
+{
+  "memberId": "12347",
+  "firstname": "value1",
+  "lastname": "value2",
+  "dob": "value3",
+  "rxInfo": [
+    {
+      "rx": "RX004",
+      "description": "Medicine description"
+    },
+    {
+      "rx": "RX006",
+      "description": "Medicine description"
+    }
+  ]
+}
+
+{
+  "memberId": "12346",
+  "firstname": "value1",
+  "lastname": "value2",
+  "dob": "value3",
+  "rxInfo": [
+    {
+      "rx": "RX003",
+      "description": "Medicine description"
+    }
+  ]
+}
+
+
+---create springboot project
+--> create services...
+  1:  Upload and process file; --(in same request need to give input bundle_key)
+  2: bundled records with bundle_key
+  3: extract each bundled record and store into below tables...
+  
+  Membership_Info  table with root level fields
+
+  rx_info table with rx level fields.
