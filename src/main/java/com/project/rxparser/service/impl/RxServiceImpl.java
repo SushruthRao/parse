@@ -72,7 +72,7 @@ public class RxServiceImpl implements RxService {
 		 List<RawJsonDataDto> rawDataList = getRawDataFromFile(file);
 		Map<List<String>, List<RawJsonDataDto>> groupedData = groupByBundleKey(rawDataList, bundleKeys);
 		List<RxBundledResponseDto> bundledResponseList = getBundledResponse(groupedData, bundleKeys);
-
+		saveToDatabase(rawDataList);
 		return bundledResponseList;
 	}
 	
@@ -178,4 +178,45 @@ public class RxServiceImpl implements RxService {
 	}
 
 
+	private void saveToDatabase(List<RawJsonDataDto> rawDataList) {
+		Map<String, List<RawJsonDataDto>> groupedByMemberId = rawDataList.stream()
+				.collect(Collectors.groupingBy(RawJsonDataDto::memberId, LinkedHashMap::new, Collectors.toList()));
+
+		groupedByMemberId.forEach((memberId, records) -> {
+			MembershipInfo member = getOrCreateMember(records.get(0));
+
+			Set<String> existingRxInfo = member.getRxInfo().stream()
+					.map(record -> record.getRx())
+					.collect(Collectors.toSet());
+
+			List<RxInfo> newRxList = records.stream()
+					.filter(record -> !existingRxInfo.contains(record.rx()))
+					.map(record -> getRxInfo(record, member))
+					.toList();
+
+			member.getRxInfo().addAll(newRxList);
+			membershipRepository.save(member);
+		});
+	}
+
+	private MembershipInfo getOrCreateMember(RawJsonDataDto record) {
+		return membershipRepository.findById(Long.parseLong(record.memberId()))
+				.orElseGet(() -> {
+					MembershipInfo member = new MembershipInfo();
+					member.setMemberId(Long.parseLong(record.memberId()));
+					member.setFirstName(record.firstname());
+					member.setLastName(record.lastname());
+					member.setDob(record.dob());
+					return member;
+				});
+	}
+
+	private RxInfo getRxInfo(RawJsonDataDto record, MembershipInfo member) {
+		RxInfo rxInfo = new RxInfo();
+		rxInfo.setRx(record.rx());
+		rxInfo.setDrugName(record.drugName());
+		rxInfo.setDescription(record.description());
+		rxInfo.setMember(member);
+		return rxInfo;
+	}
 }
