@@ -84,7 +84,7 @@ public class RxServiceImpl implements RxService {
 		}
 		String fileName = file.getOriginalFilename().toLowerCase();
 
-		if(fileName == null || fileName.endsWith(".txt"))
+		if(fileName == null || !fileName.endsWith(".txt"))
 		{
 			throw new InvalidFileException("Invalid file, please upload .txt file");
 		}
