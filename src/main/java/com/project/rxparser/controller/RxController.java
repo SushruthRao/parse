@@ -36,16 +36,19 @@ public class RxController {
 	 * @return
 	 */
 	@PostMapping("/upload")
-	public ResponseEntity<ApiResponse<BundledAndInvalidRecordsDto>> uploadRxFile
+	public ResponseEntity<ApiResponse<List<RxBundledResponseDto>>> uploadRxFile
 			(@RequestParam("file") MultipartFile file,
 			@RequestParam("bundle_key") String bundleKey) {
 
 		// Get bundled list
 		BundledAndInvalidRecordsDto bundledList = rxServiceImpl.processAndUploadFile(file, bundleKey);
-
+		String message = bundledList.invalidRecords().isEmpty() ? "File upload success" : "File upload success, " + bundledList.invalidRecords().size() + " invalid records found so skipped saving them to db";
 		// Add the bundled response json to the response body
-		ApiResponse<BundledAndInvalidRecordsDto> response = new ApiResponse<>(true, "File uploaded successfully", bundledList);
-
+		ApiResponse<List<RxBundledResponseDto>> response = new ApiResponse<>(
+				true,
+				message,
+				bundledList.bundledData()
+		);
 		return ResponseEntity.ok(response);
 	}
 
