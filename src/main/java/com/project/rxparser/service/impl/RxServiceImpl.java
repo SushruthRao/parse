@@ -35,7 +35,6 @@ import tools.jackson.databind.ObjectMapper;
 public class RxServiceImpl implements RxService {
 
 	private final MembershipInfoRepository membershipRepository;
-	private final RxInfoRepository rxInfoRepository;
 
 	private final ObjectMapper objectMapper;
 
@@ -47,10 +46,9 @@ public class RxServiceImpl implements RxService {
 	);
 
 
-	public RxServiceImpl(MembershipInfoRepository membershipInfoRepository, RxInfoRepository rxInfoRepository,
+	public RxServiceImpl(MembershipInfoRepository membershipInfoRepository,
 			ObjectMapper objectMapper) {
 		this.membershipRepository = membershipInfoRepository;
-		this.rxInfoRepository = rxInfoRepository;
 		this.objectMapper = objectMapper;
 	}
 
@@ -80,6 +78,7 @@ public class RxServiceImpl implements RxService {
 		BundledAndInvalidRecordsDto bundledAndInvalidRecordsDto = new BundledAndInvalidRecordsDto(bundledResponseList, validAndInvalidRecords.invalidRecords());
 
 		saveToDatabase(validAndInvalidRecords.validRecords());
+
 		return bundledAndInvalidRecordsDto;
 	}
 	
@@ -143,8 +142,8 @@ public class RxServiceImpl implements RxService {
 		return rawDataList.stream()
 				.collect(Collectors.groupingBy(
 						record -> bundleKeys.stream()
-								.map(key -> checkField(record, key))
-								.toList(),
+															.map(key -> checkField(record, key))
+															.toList(),
 						LinkedHashMap::new,
 						Collectors.toList()
 				));

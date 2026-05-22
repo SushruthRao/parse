@@ -42,6 +42,7 @@ public class RxController {
 
 		// Get bundled list
 		BundledAndInvalidRecordsDto bundledList = rxServiceImpl.processAndUploadFile(file, bundleKey);
+
 		String message = bundledList.invalidRecords().isEmpty() ? "File upload success" : "File upload success, " + bundledList.invalidRecords().size() + " invalid records found so skipped saving them to db";
 		// Add the bundled response json to the response body
 		ApiResponse<List<RxBundledResponseDto>> response = new ApiResponse<>(
