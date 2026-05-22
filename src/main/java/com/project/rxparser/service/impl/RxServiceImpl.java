@@ -13,12 +13,9 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import com.project.rxparser.dto.RawJsonDataDto;
+import com.project.rxparser.dto.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
-
-import com.project.rxparser.dto.RxBundledResponseDto;
-import com.project.rxparser.dto.RxInfoDto;
 
 import com.project.rxparser.exception.InvalidBundleKeyException;
 import com.project.rxparser.exception.InvalidFileException;
@@ -66,14 +63,24 @@ public class RxServiceImpl implements RxService {
 	 */
 	@Override
 	@Transactional
-	public List<RxBundledResponseDto> processAndUploadFile(MultipartFile file, String bundleKey) {
+	public BundledAndInvalidRecordsDto processAndUploadFile(MultipartFile file, String bundleKey) {
+
 		 validateFile(file);
+
 		 List<String> bundleKeys = getValidBundleKeys(bundleKey);
+
 		 List<RawJsonDataDto> rawDataList = getRawDataFromFile(file);
-		Map<List<String>, List<RawJsonDataDto>> groupedData = groupByBundleKey(rawDataList, bundleKeys);
+
+		ValidAndInvalidRecordsDto validAndInvalidRecords = getValidAndInvalidRecords(rawDataList);
+
+		Map<List<String>, List<RawJsonDataDto>> groupedData = groupByBundleKey(validAndInvalidRecords.validRecords(), bundleKeys);
+
 		List<RxBundledResponseDto> bundledResponseList = getBundledResponse(groupedData, bundleKeys);
-		saveToDatabase(rawDataList);
-		return bundledResponseList;
+
+		BundledAndInvalidRecordsDto bundledAndInvalidRecordsDto = new BundledAndInvalidRecordsDto(bundledResponseList, validAndInvalidRecords.invalidRecords());
+
+		saveToDatabase(validAndInvalidRecords.validRecords());
+		return bundledAndInvalidRecordsDto;
 	}
 	
 	private void validateFile(MultipartFile file)
@@ -84,7 +91,7 @@ public class RxServiceImpl implements RxService {
 		}
 		String fileName = file.getOriginalFilename().toLowerCase();
 
-		if(fileName == null || !fileName.endsWith(".txt"))
+		if(!fileName.endsWith(".txt"))
 		{
 			throw new InvalidFileException("Invalid file, please upload .txt file");
 		}
@@ -149,7 +156,7 @@ public class RxServiceImpl implements RxService {
 			case "firstname" -> record.firstname();
 			case "lastname"  -> record.lastname();
 			case "dob"       -> record.dob();
-			default -> "";
+			default -> throw new InvalidBundleKeyException("Unexpected bundle key: " + key);
 		};
 	}
 
@@ -218,5 +225,31 @@ public class RxServiceImpl implements RxService {
 		rxInfo.setDescription(record.description());
 		rxInfo.setMember(member);
 		return rxInfo;
+	}
+
+
+	private boolean checkIfValidRecord(RawJsonDataDto record) {
+		if (record.memberId() == null || record.memberId().isBlank() ) return false;
+		if (record.firstname() == null || record.firstname().isBlank()) return false;
+		if (record.lastname() == null || record.lastname().isBlank())  return false;
+		if (record.dob() == null || record.dob().isBlank())  return false;
+		if (record.rx()  == null || record.rx().isBlank())  return false;
+		if (record.drugName() == null || record.drugName().isBlank())  return false;
+		if (record.description() == null || record.description().isBlank()) return false;
+		return true;
+	}
+
+	private ValidAndInvalidRecordsDto getValidAndInvalidRecords(List<RawJsonDataDto> rawDataList) {
+		List<RawJsonDataDto> validList   = new ArrayList<>();
+		List<String>         invalidList = new ArrayList<>();
+
+		for (RawJsonDataDto record : rawDataList) {
+			if (checkIfValidRecord(record)) validList.add(record);
+			else
+				invalidList.add(record.toString());
+		}
+
+
+		return new ValidAndInvalidRecordsDto(validList, invalidList);
 	}
 }

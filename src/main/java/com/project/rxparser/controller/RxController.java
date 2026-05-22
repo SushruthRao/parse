@@ -3,6 +3,7 @@ package com.project.rxparser.controller;
 import java.util.List;
 import java.util.Map;
 
+import com.project.rxparser.dto.BundledAndInvalidRecordsDto;
 import com.project.rxparser.dto.RxBundledResponseDto;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,15 +36,15 @@ public class RxController {
 	 * @return
 	 */
 	@PostMapping("/upload")
-	public ResponseEntity<ApiResponse<List<RxBundledResponseDto>>> uploadRxFile
+	public ResponseEntity<ApiResponse<BundledAndInvalidRecordsDto>> uploadRxFile
 			(@RequestParam("file") MultipartFile file,
 			@RequestParam("bundle_key") String bundleKey) {
 
 		// Get bundled list
-		List<RxBundledResponseDto> bundledList = rxServiceImpl.processAndUploadFile(file, bundleKey);
+		BundledAndInvalidRecordsDto bundledList = rxServiceImpl.processAndUploadFile(file, bundleKey);
 
 		// Add the bundled response json to the response body
-		ApiResponse<List<RxBundledResponseDto>> response = new ApiResponse<>(true, "File uploaded successfully", bundledList);
+		ApiResponse<BundledAndInvalidRecordsDto> response = new ApiResponse<>(true, "File uploaded successfully", bundledList);
 
 		return ResponseEntity.ok(response);
 	}
