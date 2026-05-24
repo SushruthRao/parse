@@ -1,0 +1,47 @@
+Scenario 1: Batch Insert Records into Database
+Implement database batch insert, not a batch process.
+The application should insert records into the database in batches. The batch size should be configurable.
+Example:
+File may contain 10,000, 100,000, or 1,000,000 records.
+Instead of inserting all records at once, insert records in smaller batches.
+If some records fail, the valid records should still be inserted.
+Failed records should be captured and handled properly.
+Scenario 2: Process Files in Parallel Using Scheduler
+Create an endpoint to start the file processing batch job.
+Once the service is called:
+A scheduler should run every 5 minutes.
+The scheduler should read all available files from a local folder.
+Example: folder may contain 10 files, each with 10,000 records.
+The application should process only a configurable number of files at a time.
+Example: process 2 files in parallel.
+Once those 2 files are completed, process the next 2 files.
+After successful processing, move the files to an archive folder.
+Show proof that files are processed in parallel, for example by logging thread names and file names.
+Scenario 3: File-Level Circuit Breaker
+Implement a circuit breaker at the file level.
+For each file:
+If the file contains 1,000 records and 50 records fail, stop processing that file.
+The failure threshold should be configurable.
+If the threshold is reached, rollback the valid records inserted from that file.
+Move the failed file to an error folder.
+Continue processing the other files normally.
+Failure in one file should not stop the processing of other files.
+
+
+added scenerios.
+ 
+scenario 1. file has 10000 or 1m, or 1L records, now implement (batch inserting) 
+	    while storing in database
+		- make configurable on how much to insert at once.
+		- if error, then whatever is proper should be inserted
+ 
+scenario 2. folder has 10 files, each has 10k records. one for endpoint, 
+create batch process, scheduler process, every five minutes, read file location, read all files, and strt executing two files at a time, once done processing, move files into archive location, (just another folder). and then continue with the next two(this is a configurable number) files
+ 
+need to prove this is happening parallely
+ 
+scenario 3. same application, implement circuit breaker at file level. in file there are some 1000 records, and if 50 records fail(invalid), dont continue the file, rollback , but continue other files.  threshold is configurable.
+
+1) batch process with configurable batch size (how many lines to read)
+2) parallel process reading of files in local and then move to archive, run on a scheduler, make number of files read be configurable
+3) circuit breaker in file level in batch process (rollback if failed) keep failure threshold percent
