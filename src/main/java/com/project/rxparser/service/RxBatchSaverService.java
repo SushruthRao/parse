@@ -30,7 +30,7 @@ public class RxBatchSaverService {
 
     public List<String> batchInsert(List<IndexedRecord> records, Integer size) {
 
-        int batchSize = (size != null) ? size : batchConfiguration.getBatchSize();
+        int batchSize = (size != null && size > 0) ? size : batchConfiguration.getBatchSize();
 
         Map<String, List<IndexedRecord>> groupedByMemberId = records.stream()
                 .collect(Collectors.groupingBy(
@@ -54,7 +54,6 @@ public class RxBatchSaverService {
 
             int batchFailuresBefore = failedRecords.size();
 
-            // Process each member inside the chunk loop
             for (Map.Entry<String, List<IndexedRecord>> entry : batch) {
                 String memberId = entry.getKey();
                 List<IndexedRecord> indexedRecords = entry.getValue();
