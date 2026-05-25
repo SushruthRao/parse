@@ -1,0 +1,154 @@
+# Batch insert size
+rx.batch.size=100
+
+# Hibernate batch settings
+spring.jpa.properties.hibernate.jdbc.batch_size=100
+spring.jpa.properties.hibernate.order_inserts=true
+spring.jpa.properties.hibernate.order_updates=true
+spring.jpa.properties.hibernate.jdbc.batch_versioned_data=true
+
+# Required: disable auto-increment ID generation issue with batching
+spring.jpa.properties.hibernate.generate_statistics=true
+
+
+
+
+
+package com.project.rxparser.service.impl;
+
+import com.project.rxparser.dto.RawJsonDataDto;
+import com.project.rxparser.model.MembershipInfo;
+import com.project.rxparser.model.RxInfo;
+import com.project.rxparser.repository.MembershipInfoRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Service
+@Slf4j
+public class RxBatchSaverService {
+
+    private final MembershipInfoRepository membershipRepository;
+    private final EntityManager entityManager;
+
+    @Value("${rx.batch.size:100}")
+    private int batchSize;
+
+    public RxBatchSaverService(MembershipInfoRepository membershipRepository,
+                               EntityManager entityManager) {
+        this.membershipRepository = membershipRepository;
+        this.entityManager = entityManager;
+    }
+
+    /**
+     * Inserts all valid records into DB using JDBC batch inserts.
+     * Records are partitioned into configurable batch sizes.
+     * If one record fails, it is captured and the rest continue.
+     *
+     * @param rawDataList all valid parsed records
+     * @return list of memberIds that failed to save
+     */
+    public List<String> batchInsert(List<RawJsonDataDto> rawDataList) {
+
+        // Group by memberId so we build MembershipInfo + RxInfo together
+        Map<String, List<RawJsonDataDto>> groupedByMemberId = rawDataList.stream()
+                .collect(Collectors.groupingBy(RawJsonDataDto::memberId,
+                        LinkedHashMap::new,
+                        Collectors.toList()));
+
+        List<Map.Entry<String, List<RawJsonDataDto>>> entries =
+                new ArrayList<>(groupedByMemberId.entrySet());
+
+        List<String> failedMemberIds = new ArrayList<>();
+
+        // Partition into batches of batchSize
+        for (int i = 0; i < entries.size(); i += batchSize) {
+            List<Map.Entry<String, List<RawJsonDataDto>>> batch =
+                    entries.subList(i, Math.min(i + batchSize, entries.size()));
+
+            log.info("[RxBatchSaverService.batchInsert] Inserting batch {}-{} of {} members",
+                    i + 1, i + batch.size(), entries.size());
+
+            List<String> batchFailures = saveBatch(batch);
+            failedMemberIds.addAll(batchFailures);
+        }
+
+        return failedMemberIds;
+    }
+
+    /**
+     * Saves one batch. Each member record is attempted individually —
+     * a failure on one does not affect others in the batch.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public List<String> saveBatch(List<Map.Entry<String, List<RawJsonDataDto>>> batch) {
+
+        List<String> failedInBatch = new ArrayList<>();
+        int count = 0;
+
+        for (Map.Entry<String, List<RawJsonDataDto>> entry : batch) {
+            try {
+                saveSingleMember(entry.getKey(), entry.getValue());
+                count++;
+
+                // Flush and clear every batchSize records to free memory
+                // and actually trigger the JDBC batch to the DB
+                if (count % batchSize == 0) {
+                    entityManager.flush();
+                    entityManager.clear();
+                }
+
+            } catch (Exception e) {
+                log.error("[RxBatchSaverService.saveBatch] Failed for memberId={}: {}",
+                        entry.getKey(), e.getMessage());
+                failedInBatch.add(entry.getKey());
+            }
+        }
+
+        // Flush remaining records in the batch
+        entityManager.flush();
+        entityManager.clear();
+
+        return failedInBatch;
+    }
+
+    private void saveSingleMember(String memberId, List<RawJsonDataDto> records) {
+
+        MembershipInfo member = membershipRepository.findById(Long.parseLong(memberId))
+                .orElseGet(() -> {
+                    MembershipInfo m = new MembershipInfo();
+                    m.setMemberId(Long.parseLong(records.getFirst().memberId()));
+                    m.setFirstName(records.getFirst().firstname());
+                    m.setLastName(records.getFirst().lastname());
+                    m.setDob(records.getFirst().dob());
+                    return m;
+                });
+
+        Set<String> existingRx = member.getRxInfo().stream()
+                .map(RxInfo::getRx)
+                .collect(Collectors.toSet());
+
+        records.stream()
+                .filter(r -> !existingRx.contains(r.rx()))
+                .map(r -> buildRxInfo(r, member))
+                .forEach(rx -> member.getRxInfo().add(rx));
+
+        // persist/merge into the EntityManager's batch queue
+        // actual SQL is deferred until flush()
+        entityManager.merge(member);
+    }
+
+    private RxInfo buildRxInfo(RawJsonDataDto record, MembershipInfo member) {
+        RxInfo rxInfo = new RxInfo();
+        rxInfo.setRx(record.rx());
+        rxInfo.setDrugName(record.drugName());
+        rxInfo.setDescription(record.description());
+        rxInfo.setMember(member);
+        return rxInfo;
+    }
+}
