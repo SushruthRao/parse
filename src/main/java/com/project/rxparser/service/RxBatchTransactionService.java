@@ -37,8 +37,6 @@ public class RxBatchTransactionService {
 
             try {
                 saveSingleMember(memberId, indexedRecords);
-                entityManager.flush();
-                entityManager.clear();
                 log.debug("[RxBatchTransactionService.saveBatch] Member {} saved", memberId);
 
             } catch (Exception e) {
@@ -73,10 +71,8 @@ public class RxBatchTransactionService {
             existingRx.add(rx);
         }
 
-        if (member.getMemberId() != null && membershipRepository.existsById(member.getMemberId())) {
-            entityManager.merge(member);   // existing member
-        } else {
-            entityManager.persist(member); // new member
+        if (member.getMemberId() == null) {
+            entityManager.persist(member);
         }
     }
 
