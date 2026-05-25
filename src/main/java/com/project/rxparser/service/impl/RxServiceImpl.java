@@ -1,48 +1,41 @@
 package com.project.rxparser.service.impl;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-
-import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
-
-import com.project.rxparser.dto.BundledAndInvalidRecordsDto;
-import com.project.rxparser.dto.RawJsonDataDto;
-import com.project.rxparser.dto.RxBundledResponseDto;
-import com.project.rxparser.dto.RxInfoDto;
-import com.project.rxparser.dto.ValidAndInvalidRecordsDto;
+import com.project.rxparser.dto.*;
 import com.project.rxparser.exception.InvalidBundleKeyException;
 import com.project.rxparser.exception.InvalidFileException;
 import com.project.rxparser.model.MembershipInfo;
 import com.project.rxparser.model.RxInfo;
 import com.project.rxparser.repository.MembershipInfoRepository;
+import com.project.rxparser.service.RxBatchSaverService;
 import com.project.rxparser.service.RxService;
-
-import jakarta.transaction.Transactional;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 @Slf4j
 public class RxServiceImpl implements RxService {
 
 	private final MembershipInfoRepository membershipRepository;
-
-	private final ObjectMapper objectMapper = new ObjectMapper();
+	private final RxBatchSaverService batchSaverService;
+	private final ObjectMapper objectMapper;
 
 	private static final Set<String> VALID_BUNDLE_KEYS = Set.of("memberId", "lastname", "firstname", "dob");
 
-	public RxServiceImpl(MembershipInfoRepository membershipInfoRepository) {
-		this.membershipRepository = membershipInfoRepository;
+	public RxServiceImpl(MembershipInfoRepository repo, RxBatchSaverService batchSaverService, ObjectMapper objectMapper) {
+		this.membershipRepository = repo;
+        this.batchSaverService = batchSaverService;
+        this.objectMapper = objectMapper;
 	}
 
 	/**
@@ -53,8 +46,7 @@ public class RxServiceImpl implements RxService {
 	 * @return returns bundled response
 	 */
 	@Override
-	@Transactional
-	public BundledAndInvalidRecordsDto processAndUploadFile(MultipartFile file, String bundleKey) {
+	public BundledAndInvalidRecordsDto processAndUploadFile(MultipartFile file, String bundleKey, boolean batchEnabled) {
 
 		validateFile(file);
 
@@ -62,13 +54,22 @@ public class RxServiceImpl implements RxService {
 
 		ValidAndInvalidRecordsDto validAndInvalidRecords = parseAndValidateFileRecords(file);
 
-		Map<List<String>, List<RawJsonDataDto>> groupedByBundleKeyData = getGroupedDataByBundleKey(validAndInvalidRecords.validRecords(),bundleKeys);
+		Map<List<String>, List<IndexedRecord>> groupedByBundleKeyData = getGroupedDataByBundleKey(validAndInvalidRecords.validRecords(),bundleKeys);
 				
 		List<RxBundledResponseDto> bundledResponseList = getBundledResponse(groupedByBundleKeyData, bundleKeys);
 
 		BundledAndInvalidRecordsDto bundledAndInvalidRecordsDto = new BundledAndInvalidRecordsDto(bundledResponseList, validAndInvalidRecords.invalidRecords());
 
-		saveToDatabase(validAndInvalidRecords.validRecords());
+		List<String> failedRecordsLineNumbers;
+		if(batchEnabled) {
+			failedRecordsLineNumbers = batchSaverService.batchInsert(validAndInvalidRecords.validRecords());
+		}
+		else{
+			failedRecordsLineNumbers = saveToDatabase(validAndInvalidRecords.validRecords());
+		}
+
+
+		bundledAndInvalidRecordsDto.invalidRecords().addAll(failedRecordsLineNumbers);
 
 		return bundledAndInvalidRecordsDto;
 	}
@@ -77,12 +78,11 @@ public class RxServiceImpl implements RxService {
 		
 		// check if file is null or empty
 		if (file == null || file.isEmpty()) {
-			
 			log.info("[RxServiceImpl.validateFile] Empty/null file exception thrown");
 			throw new InvalidFileException("Empty or null file, please upload file");
 		}
-		
-		String fileName = file.getOriginalFilename().toLowerCase();
+
+		String fileName = file.getOriginalFilename() != null ? file.getOriginalFilename().toLowerCase() : "";
 
 		// check if file type is .txt
 		if (!fileName.endsWith(".txt")) {
@@ -115,25 +115,27 @@ public class RxServiceImpl implements RxService {
 	}
 
 	private ValidAndInvalidRecordsDto parseAndValidateFileRecords(MultipartFile file) {
-		List<RawJsonDataDto> validList = new ArrayList<>();
+		List<IndexedRecord> validList = new ArrayList<>();
 		List<String> invalidList = new ArrayList<>();
+		int lineNumber = 0;
 
 		try (BufferedReader reader = new BufferedReader(new InputStreamReader(file.getInputStream()))) {
 			String line;
-			while ((line = reader.readLine()) != null) {
+			while ((line = reader.readLine()) != null){
+				lineNumber++;
 				String trimmedLine = line.trim();
 				if (trimmedLine.isEmpty()) continue;
 
 				try {
 					RawJsonDataDto record = objectMapper.readValue(trimmedLine, RawJsonDataDto.class);
 					if (isValidRecord(record))
-						validList.add(record);
+						validList.add(new IndexedRecord(lineNumber, record));
 					else
-						invalidList.add(record.toString());
+						invalidList.add("Line " + lineNumber);
 
 				} catch (JacksonException e) {
-					log.info("[RxServiceImpl.parseAndValidateFileRecords] Malformed JSON skipped: {}", e.getMessage());
-					invalidList.add(trimmedLine);
+					log.info("[RxServiceImpl.parseAndValidateFileRecords] Invalid Json format skipped at line {}", lineNumber);
+					invalidList.add("Line " + lineNumber);
 				}
 			}
 		} catch (IOException e) {
@@ -145,12 +147,12 @@ public class RxServiceImpl implements RxService {
 	}
 
 
-	private Map<List<String>, List<RawJsonDataDto>> getGroupedDataByBundleKey(List<RawJsonDataDto> rawDataList, List<String> bundleKeys) {
+	private Map<List<String>, List<IndexedRecord>> getGroupedDataByBundleKey(List<IndexedRecord> records, List<String> bundleKeys) {
 		
-		return rawDataList.stream()
+		return records.stream()
 				.collect(Collectors.groupingBy(
 							record -> bundleKeys.stream()
-												.map(key -> checkField(record, key))
+												.map(key -> checkField(record.data(), key))
 												.toList(),
 							LinkedHashMap::new,
 							Collectors.toList()
@@ -168,16 +170,16 @@ public class RxServiceImpl implements RxService {
 		};
 	}
 
-	private List<RxBundledResponseDto> getBundledResponse(Map<List<String>, List<RawJsonDataDto>> groupedData,
+	private List<RxBundledResponseDto> getBundledResponse(Map<List<String>, List<IndexedRecord>> groupedData,
 			List<String> bundleKeys) {
 		
 		return groupedData.values().stream().map(group -> {
 			// Get the member fields from the group
-			RawJsonDataDto memberFields = group.get(0);
+			RawJsonDataDto memberFields = group.get(0).data();
 
 			// Get the rxInfoList containing rx, drugName, description
 			List<RxInfoDto> rxInfoList = group.stream()
-												.map(rxEntry -> new RxInfoDto(rxEntry.rx(), rxEntry.drugName(), rxEntry.description()))
+												.map(rxEntry -> new RxInfoDto(rxEntry.data().rx(), rxEntry.data().drugName(), rxEntry.data().description()))
 												.toList();
 
 			// create bundled response with rxinfo list
@@ -189,31 +191,55 @@ public class RxServiceImpl implements RxService {
 												}).toList();
 	}
 
-	private void saveToDatabase(List<RawJsonDataDto> rawDataList) {
-		
-		Map<String, List<RawJsonDataDto>> groupedByMemberId = rawDataList.stream()
-														.collect(
-															Collectors.groupingBy(record -> record.memberId(), 
-																							LinkedHashMap::new, 
-																							Collectors.toList()
-																)
-															);
+	public List<String> saveToDatabase(List<IndexedRecord> records) {
 
-		groupedByMemberId.forEach((memberId, records) -> {
-			
-			MembershipInfo member = getExistingMemberOrCreateMember(records.getFirst());
+		List<String> failedRecords = new ArrayList<>();
 
-			Set<String> existingRxInfo = member.getRxInfo().stream()
-															.map(record -> record.getRx())
-															.collect(Collectors.toSet());
+		Map<String, List<IndexedRecord>> groupedByMemberId = records.stream()
+				.collect(Collectors.groupingBy(
+						indexed -> indexed.data().memberId(),
+						LinkedHashMap::new,
+						Collectors.toList()
+				));
 
-			List<RxInfo> newRxList = records.stream()
-											.filter(record -> !existingRxInfo.contains(record.rx()))
-											.map(record -> getRxInfo(record, member)).toList();
+		int total = groupedByMemberId.size();
+		log.info("[saveToDatabase] Starting — {} saving grouped members without batching", total);
 
-			member.getRxInfo().addAll(newRxList);
-			membershipRepository.save(member);
+		groupedByMemberId.forEach((memberId, indexedRecords) -> {
+			try {
+				MembershipInfo member = getExistingMemberOrCreateMember(indexedRecords.getFirst().data());
+
+				Set<String> existingRxInfo = member.getRxInfo().stream()
+						.map(rxInfo -> rxInfo.getRx())
+						.collect(Collectors.toSet());
+
+				List<RxInfo> newRxList = indexedRecords.stream()
+						.filter(indexed -> !existingRxInfo.contains(indexed.data().rx()))
+						.map(indexed -> getRxInfo(indexed.data(), member))
+						.toList();
+
+				member.getRxInfo().addAll(newRxList);
+				membershipRepository.save(member);
+
+			}  catch (DataIntegrityViolationException e) {
+			// duplicate record
+			log.warn("[saveToDatabase] DataIntegrityViolationException for member {}: {}", memberId, e.getMostSpecificCause().getMessage());
+			indexedRecords.forEach(record -> failedRecords.add("Line " + record.lineNumber()));
+
+
+		} catch (DataAccessException e) {
+			log.error("[saveToDatabase] DataAccessException for member {}: {}", memberId, e.getMessage());
+			indexedRecords.forEach(record -> failedRecords.add("Line " + record.lineNumber()));
+		}
+
+		 catch (Exception e) {
+			// catches NumberFormatException from parseLong, and anything else unexpected
+			log.error("[RxServiceImpl.saveToDatabase] Failed to save member {}: {}", memberId, e.getMessage());
+			indexedRecords.forEach(record -> failedRecords.add("Line " + record.lineNumber()));
+		}
 		});
+
+		return failedRecords;
 	}
 
 	private MembershipInfo getExistingMemberOrCreateMember(RawJsonDataDto record) {

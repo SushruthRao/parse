@@ -15,7 +15,6 @@ public record BundledAndInvalidRecordsDto (
 	        if (invalidRecords.isEmpty()) {
 	            return "File upload success";
 	        }
-	        String status = "File upload success, skipped " + invalidRecords.size() + " invalid records";
-	        return status;
+	        return "File upload success, skipped " + invalidRecords.size() + " invalid records";
 	    }
 }

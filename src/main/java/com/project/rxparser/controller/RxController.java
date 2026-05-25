@@ -33,10 +33,10 @@ public class RxController {
 	 */
 	@PostMapping("/upload")
 	public ResponseEntity<ApiResponse<BundledAndInvalidRecordsDto>> uploadRxFile(
-			@RequestParam("file") MultipartFile file, @RequestParam("bundle_key") String bundleKey) {
+			@RequestParam("file") MultipartFile file, @RequestParam("bundle_key") String bundleKey, @RequestParam(value = "batch", defaultValue = "false") boolean batchEnabled) {
 
 		// get bundled list
-		BundledAndInvalidRecordsDto bundledAndInvalidRecordsList = rxServiceImpl.processAndUploadFile(file, bundleKey);
+		BundledAndInvalidRecordsDto bundledAndInvalidRecordsList = rxServiceImpl.processAndUploadFile(file, bundleKey, batchEnabled);
 
 
 		ApiResponse<BundledAndInvalidRecordsDto> response = new ApiResponse<>(

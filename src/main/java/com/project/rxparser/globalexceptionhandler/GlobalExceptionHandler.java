@@ -44,7 +44,7 @@ public class GlobalExceptionHandler {
 	
 
 	@ExceptionHandler(DataIntegrityViolationException.class)
-	public ResponseEntity<ApiResponse<?>> handle(DataIntegrityViolationException exception) {
+	public ResponseEntity<ApiResponse<?>> handleDataIntegrityViolationException(DataIntegrityViolationException exception) {
 
 		ApiResponse<?> errorResponse = new ApiResponse<>(false, "Internal server error", null);
 		log.info("[GlobalExceptionHandler] DataIntegrityViolationException occurred : {} ", exception.getMessage());
