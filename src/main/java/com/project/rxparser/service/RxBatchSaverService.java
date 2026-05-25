@@ -42,11 +42,12 @@ public class RxBatchSaverService {
         log.info("[batchInsert] Starting — {} unique members, batch size: {}", total, batchSize);
 
         for (int i = 0; i < total; i += batchSize) {
+
             int end = Math.min(i + batchSize, total);
             List<Map.Entry<String, List<IndexedRecord>>> batch = entries.subList(i, end);
 
             log.info("[batchInsert] Processing members {}-{} of {}", i + 1, end, total);
-            
+
             List<String> batchFailures = batchTransactionService.saveBatch(batch);
             failedRecords.addAll(batchFailures);
 

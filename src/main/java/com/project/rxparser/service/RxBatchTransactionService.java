@@ -26,7 +26,7 @@ public class RxBatchTransactionService {
         this.entityManager = entityManager;
     }
 
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
+
     public List<String> saveBatch(List<Map.Entry<String, List<IndexedRecord>>> batch) {
 
         List<String> failedInBatch = new ArrayList<>();
@@ -51,7 +51,8 @@ public class RxBatchTransactionService {
         return failedInBatch;
     }
 
-    private void saveSingleMember(String memberId, List<IndexedRecord> indexedRecords) {
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void saveSingleMember(String memberId, List<IndexedRecord> indexedRecords) {
 
         MembershipInfo member = membershipRepository.findById(Long.parseLong(memberId))
                 .orElseGet(() -> createNewMember(indexedRecords.getFirst().data()));
@@ -72,7 +73,11 @@ public class RxBatchTransactionService {
             existingRx.add(rx);
         }
 
-        entityManager.merge(member);
+        if (member.getMemberId() != null && membershipRepository.existsById(member.getMemberId())) {
+            entityManager.merge(member);   // existing member
+        } else {
+            entityManager.persist(member); // new member
+        }
     }
 
     private MembershipInfo createNewMember(RawJsonDataDto data) {
