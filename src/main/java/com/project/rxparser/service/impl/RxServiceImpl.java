@@ -46,11 +46,12 @@ public class RxServiceImpl implements RxService {
 	 * @return returns bundled response
 	 */
 	@Override
-	public BundledAndInvalidRecordsDto processAndUploadFile(MultipartFile file, String bundleKey, boolean batchEnabled) {
+	public BundledAndInvalidRecordsDto processAndUploadFile(MultipartFile file, String bundleKey, boolean batchEnabled, Integer batchSize) {
 
 		validateFile(file);
 
 		List<String> bundleKeys = getValidatedBundleKeys(bundleKey);
+
 
 		ValidAndInvalidRecordsDto validAndInvalidRecords = parseAndValidateFileRecords(file);
 
@@ -62,7 +63,7 @@ public class RxServiceImpl implements RxService {
 
 		List<String> failedRecordsLineNumbers;
 		if(batchEnabled) {
-			failedRecordsLineNumbers = batchSaverService.batchInsert(validAndInvalidRecords.validRecords());
+			failedRecordsLineNumbers = batchSaverService.batchInsert(validAndInvalidRecords.validRecords(), batchSize);
 		}
 		else{
 			failedRecordsLineNumbers = saveToDatabase(validAndInvalidRecords.validRecords());

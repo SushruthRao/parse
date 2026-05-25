@@ -6,6 +6,6 @@ import com.project.rxparser.dto.BundledAndInvalidRecordsDto;
 
 public interface RxService {
 	
-	public BundledAndInvalidRecordsDto processAndUploadFile(MultipartFile file, String bundleKey, boolean batchEnabled) ;
+	public BundledAndInvalidRecordsDto processAndUploadFile(MultipartFile file, String bundleKey, boolean batchEnabled, Integer batchSize) ;
 
 }

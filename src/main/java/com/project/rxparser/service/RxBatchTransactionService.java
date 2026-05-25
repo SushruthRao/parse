@@ -26,29 +26,7 @@ public class RxBatchTransactionService {
         this.entityManager = entityManager;
     }
 
-
-    public List<String> saveBatch(List<Map.Entry<String, List<IndexedRecord>>> batch) {
-
-        List<String> failedInBatch = new ArrayList<>();
-
-        for (Map.Entry<String, List<IndexedRecord>> entry : batch) {
-            String memberId = entry.getKey();
-            List<IndexedRecord> indexedRecords = entry.getValue();
-
-            try {
-                saveSingleMember(memberId, indexedRecords);
-                log.debug("[RxBatchTransactionService.saveBatch] Member {} saved", memberId);
-
-            } catch (Exception e) {
-                entityManager.clear();
-                indexedRecords.forEach(indexed -> failedInBatch.add("Line " + indexed.lineNumber()));
-                log.warn("[RxBatchTransactionService.saveBatch] Member {} failed, exception: {}", memberId, e.getMessage());
-            }
-        }
-
-        return failedInBatch;
-    }
-
+    // Every time this is called from outside, a brand new transaction starts and commits
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void saveSingleMember(String memberId, List<IndexedRecord> indexedRecords) {
 
@@ -56,14 +34,14 @@ public class RxBatchTransactionService {
                 .orElseGet(() -> createNewMember(indexedRecords.getFirst().data()));
 
         Set<String> existingRx = member.getRxInfo().stream()
-                .map(RxInfo::getRx)
+                .map(rx -> rx.getRx())
                 .collect(Collectors.toCollection(HashSet::new));
 
         for (IndexedRecord indexed : indexedRecords) {
             String rx = indexed.data().rx();
 
             if (existingRx.contains(rx)) {
-                log.debug("[RxBatchTransactionService.saveSingleMember] Skipping duplicate rx {} for member {}", rx, memberId);
+                log.debug("[saveSingleMember] Skipping duplicate rx {} for member {}", rx, memberId);
                 continue;
             }
 
