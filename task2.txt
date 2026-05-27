@@ -1,74 +1,38 @@
-To add parallel processing per record in a batch, the key challenge is handling Hibernate’s EntityManager and transactions. Since EntityManager is not thread‑safe, each thread must have its own transaction and persistence context. Fortunately, you already have a method designed for exactly that:
-java
-
-@Transactional(Transactional.TxType.REQUIRES_NEW)
-public void saveSingleRecord(String memberId, IndexedBatchingRecord indexed) {
-    processRecord(memberId, indexed);
-    entityManager.flush();
-}
-
-This method starts a new transaction for every call, giving it a fresh EntityManager. By submitting each valid record to a thread pool and calling saveSingleRecord (instead of the non‑transactional processRecord), you automatically get thread‑safe parallel execution with minimal changes.
-1. Introduce a thread pool
-
-Add a ThreadPoolTaskExecutor bean (or reuse an existing TaskExecutor). For example:
-java
-
-@Configuration
-public class AsyncConfig {
-    @Bean
-    public ThreadPoolTaskExecutor batchExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(10);
-        executor.setMaxPoolSize(20);
-        executor.setQueueCapacity(100);
-        executor.setThreadNamePrefix("batch-");
-        executor.initialize();
-        return executor;
-    }
-}
-
-Then inject it into FileBatchingService:
-java
-
-private final ThreadPoolTaskExecutor batchExecutor;
-
-public FileBatchingService(..., ThreadPoolTaskExecutor batchExecutor) {
-    // ...
-    this.batchExecutor = batchExecutor;
-}
-
-2. Parallelise the “happy path” batch insert
-
-In saveRecordsInBatch, keep the synchronous validation, but submit only valid records to the executor. Use CompletableFuture.runAsync to call saveSingleRecord and collect all futures. Wait for all to complete before leaving the method.
-java
-
-@Transactional(Transactional.TxType.REQUIRED)   // still a transaction for the outer scope
+@Transactional(Transactional.TxType.REQUIRED)   // can be removed, but harmless
 public void saveRecordsInBatch(List<IndexedBatchingRecord> indexedRecords) {
 
     int batchSize = properties.getBatch().getBatchSize();
-    log.info("Pass 1: Trying to insert {} records with batch size of {} (in parallel)",
-             indexedRecords.size(), batchSize);
+    log.info("[FileBatchingService] Pass 1: Trying to insert {} records in parallel (batch size ignored here)",
+             indexedRecords.size());
 
-    // Quick sequential validation – an invalid record still means no batch insert at all
-    for (IndexedBatchingRecord indexed : indexedRecords) {
-        if (!indexed.isValid()) {
-            throw new InvalidRecordException("Invalid record at line " + indexed.lineNumber());
+    try {
+        // Pre‑validation – keep this
+        for (IndexedBatchingRecord indexed : indexedRecords) {
+            if (!indexed.isValid()) {
+                throw new InvalidRecordException("Invalid record found in batch at line " + indexed.lineNumber());
+            }
         }
+
+        // Parallel execution – each record in its own transaction
+        List<CompletableFuture<Void>> futures = indexedRecords.stream()
+            .map(record -> CompletableFuture.runAsync(() -> {
+                fileTransactionService.saveSingleRecord(record.data().memberId(), record);
+            }, batchExecutor))
+            .collect(Collectors.toList());
+
+        // Wait for all; any exception will cause a CompletionException to be thrown here
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        log.info("[FileBatchingService] Managed to save all records in parallel successfully");
+
+    } catch (InvalidRecordException invalidRecordException) {
+        log.warn("[FileBatchingService] Skipping batch because of invalid record: {}",
+                 invalidRecordException.getMessage());
+        processRecordsIndividually(indexedRecords, batchSize);
+
+    } catch (Exception exception) {
+        // This also catches CompletionException from parallel failures
+        log.error("[FileBatchingService] Batch failed, falling back to individual processing", exception);
+        processRecordsIndividually(indexedRecords, batchSize);
     }
-
-    // Submit all records in parallel
-    List<CompletableFuture<Void>> futures = indexedRecords.stream()
-        .map(record -> CompletableFuture.runAsync(() -> {
-            // Each call runs in its own transaction (REQUIRES_NEW)
-            fileTransactionService.saveSingleRecord(record.data().memberId(), record);
-        }, batchExecutor))
-        .collect(Collectors.toList());
-
-    // Wait for all to finish – any exception will propagate as CompletionException
-    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-        .join();
-
-    log.info("Pass 1: All {} records processed in parallel successfully", indexedRecords.size());
 }
-
-Notes
