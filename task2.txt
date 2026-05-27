@@ -1,49 +1,50 @@
-@Transactional(Transactional.TxType.REQUIRED)   // can be removed, keeps semantics
-public void saveRecordsInBatch(List<IndexedBatchingRecord> indexedRecords) {
+A few changes needed across the files:
+1. RawJsonDataDto — add the 5 log fields
+2. RxInfo — add a log column
+3. FileProcessingService — update isValidRecord() to validate logs
+4. FileTransactionService — concatenate logs when building RxInfo
 
-    int batchSize = properties.getBatch().getBatchSize();
-    log.info("[FileBatchingService] Pass 1: Processing {} records in chunks of {} (parallel per chunk)",
-             indexedRecords.size(), batchSize);
+RawJsonDataDto.java
+javapublic record RawJsonDataDto(
+    String memberId,
+    String firstname,
+    String lastname,
+    String dob,
+    String rx,
+    String drugName,
+    String description,
+    String log1,
+    String log2,
+    String log3,
+    String log4,
+    String log5
+) {}
 
-    int total = indexedRecords.size();
-    for (int start = 0; start < total; start += batchSize) {
-        int end = Math.min(start + batchSize, total);
-        List<IndexedBatchingRecord> chunk = indexedRecords.subList(start, end);
-        int chunkSize = chunk.size();
+RxInfo.java — add the log column:
+java@Column(name = "log", nullable = false)
+private String log;
 
-        // Check if this chunk contains any invalid record
-        boolean hasInvalid = chunk.stream().anyMatch(r -> !r.isValid());
+FileProcessingService.java — extend isValidRecord():
+javaprivate boolean isValidRecord(RawJsonDataDto record) {
+    return record != null 
+        && isNotNullAndNotBlank(record.memberId())   && isValidLong(record.memberId())
+        && isNotNullAndNotBlank(record.firstname())  && isNotNullAndNotBlank(record.lastname())
+        && isNotNullAndNotBlank(record.dob())        && isNotNullAndNotBlank(record.rx())
+        && isNotNullAndNotBlank(record.drugName())   && isNotNullAndNotBlank(record.description())
+        && isNotNullAndNotBlank(record.log1())       && isNotNullAndNotBlank(record.log2())
+        && isNotNullAndNotBlank(record.log3())       && isNotNullAndNotBlank(record.log4())
+        && isNotNullAndNotBlank(record.log5());
+}
 
-        if (hasInvalid) {
-            log.info("[FileBatchingService] Chunk {}-{} contains invalid records, processing sequentially",
-                     start + 1, end);
-            // Process this chunk with the existing circuit-breaker fallback
-            processRecordsIndividually(chunk, batchSize);
-            // If circuit breaker trips, the next line won't be reached
-            log.info("[FileBatchingService] Chunk {}-{} handled sequentially", start + 1, end);
-        } else {
-            // All valid – process in parallel
-            try {
-                List<CompletableFuture<Void>> futures = chunk.stream()
-                    .map(record -> CompletableFuture.runAsync(
-                        () -> fileTransactionService.saveSingleRecord(record.data().memberId(), record),
-                        batchExecutor))
-                    .collect(Collectors.toList());
+FileTransactionService.java — concatenate logs in getRxInfo():
+javaprivate RxInfo getRxInfo(RawJsonDataDto data, MembershipInfo member) {
+    String combinedLog = String.join(" | ", data.log1(), data.log2(), data.log3(), data.log4(), data.log5());
 
-                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-                log.info("[FileBatchingService] Pass 1: Records {}-{} batched successfully",
-                         start + 1, end);
-            } catch (CompletionException ce) {
-                // A parallel task failed – fallback to sequential for this chunk
-                log.warn("[FileBatchingService] Parallel chunk {}-{} failed, falling back to sequential",
-                         start + 1, end, ce.getCause());
-                processRecordsIndividually(chunk, batchSize);
-                log.info("[FileBatchingService] Chunk {}-{} completed after sequential fallback",
-                         start + 1, end);
-            }
-        }
-    }
-
-    log.info("[FileBatchingService] Managed to save batch successfully");
+    RxInfo rxInfo = new RxInfo();
+    rxInfo.setRx(data.rx());
+    rxInfo.setDrugName(data.drugName());
+    rxInfo.setDescription(data.description());
+    rxInfo.setLog(combinedLog);
+    rxInfo.setMember(member);
+    return rxInfo;
 }
