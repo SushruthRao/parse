@@ -1,48 +1,49 @@
-@Transactional(Transactional.TxType.REQUIRED)   // still okay, outer transaction does nothing
+@Transactional(Transactional.TxType.REQUIRED)   // can be removed, keeps semantics
 public void saveRecordsInBatch(List<IndexedBatchingRecord> indexedRecords) {
 
     int batchSize = properties.getBatch().getBatchSize();
-    log.info("[FileBatchingService] Pass 1: Trying to insert {} records with batchSize {} (parallel per chunk)",
+    log.info("[FileBatchingService] Pass 1: Processing {} records in chunks of {} (parallel per chunk)",
              indexedRecords.size(), batchSize);
 
-    try {
-        // 1) Pre‑validate the whole list – any invalid record still aborts entirely
-        for (IndexedBatchingRecord indexed : indexedRecords) {
-            if (!indexed.isValid()) {
-                throw new InvalidRecordException("Invalid record at line " + indexed.lineNumber());
+    int total = indexedRecords.size();
+    for (int start = 0; start < total; start += batchSize) {
+        int end = Math.min(start + batchSize, total);
+        List<IndexedBatchingRecord> chunk = indexedRecords.subList(start, end);
+        int chunkSize = chunk.size();
+
+        // Check if this chunk contains any invalid record
+        boolean hasInvalid = chunk.stream().anyMatch(r -> !r.isValid());
+
+        if (hasInvalid) {
+            log.info("[FileBatchingService] Chunk {}-{} contains invalid records, processing sequentially",
+                     start + 1, end);
+            // Process this chunk with the existing circuit-breaker fallback
+            processRecordsIndividually(chunk, batchSize);
+            // If circuit breaker trips, the next line won't be reached
+            log.info("[FileBatchingService] Chunk {}-{} handled sequentially", start + 1, end);
+        } else {
+            // All valid – process in parallel
+            try {
+                List<CompletableFuture<Void>> futures = chunk.stream()
+                    .map(record -> CompletableFuture.runAsync(
+                        () -> fileTransactionService.saveSingleRecord(record.data().memberId(), record),
+                        batchExecutor))
+                    .collect(Collectors.toList());
+
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+                log.info("[FileBatchingService] Pass 1: Records {}-{} batched successfully",
+                         start + 1, end);
+            } catch (CompletionException ce) {
+                // A parallel task failed – fallback to sequential for this chunk
+                log.warn("[FileBatchingService] Parallel chunk {}-{} failed, falling back to sequential",
+                         start + 1, end, ce.getCause());
+                processRecordsIndividually(chunk, batchSize);
+                log.info("[FileBatchingService] Chunk {}-{} completed after sequential fallback",
+                         start + 1, end);
             }
         }
-
-        // 2) Process in sub‑batches of size batchSize
-        int total = indexedRecords.size();
-        for (int start = 0; start < total; start += batchSize) {
-            int end = Math.min(start + batchSize, total);
-            List<IndexedBatchingRecord> chunk = indexedRecords.subList(start, end);
-
-            // one thread per record in this chunk
-            List<CompletableFuture<Void>> futures = chunk.stream()
-                .map(record -> CompletableFuture.runAsync(
-                    () -> fileTransactionService.saveSingleRecord(record.data().memberId(), record),
-                    batchExecutor))
-                .collect(Collectors.toList());
-
-            // Wait for all threads in this chunk to finish
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-            log.info("[FileBatchingService] Pass 1: Records {}-{} batched successfully",
-                     start + 1, end);
-        }
-
-        log.info("[FileBatchingService] Managed to save batch successfully");
-
-    } catch (InvalidRecordException invalidRecordException) {
-        log.warn("[FileBatchingService] Skipping saving records in batch because of invalid record: {}",
-                 invalidRecordException.getMessage());
-        processRecordsIndividually(indexedRecords, batchSize);
-
-    } catch (Exception exception) {
-        // This catches any failure from a parallel chunk (CompletionException)
-        log.error("[FileBatchingService] Batch failed, falling back to individual processing", exception);
-        processRecordsIndividually(indexedRecords, batchSize);
     }
+
+    log.info("[FileBatchingService] Managed to save batch successfully");
 }
