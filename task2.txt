@@ -1,47 +1,1186 @@
-Scenario 1: Batch Insert Records into Database
-Implement database batch insert, not a batch process.
-The application should insert records into the database in batches. The batch size should be configurable.
-Example:
-File may contain 10,000, 100,000, or 1,000,000 records.
-Instead of inserting all records at once, insert records in smaller batches.
-If some records fail, the valid records should still be inserted.
-Failed records should be captured and handled properly.
-Scenario 2: Process Files in Parallel Using Scheduler
-Create an endpoint to start the file processing batch job.
-Once the service is called:
-A scheduler should run every 5 minutes.
-The scheduler should read all available files from a local folder.
-Example: folder may contain 10 files, each with 10,000 records.
-The application should process only a configurable number of files at a time.
-Example: process 2 files in parallel.
-Once those 2 files are completed, process the next 2 files.
-After successful processing, move the files to an archive folder.
-Show proof that files are processed in parallel, for example by logging thread names and file names.
-Scenario 3: File-Level Circuit Breaker
-Implement a circuit breaker at the file level.
-For each file:
-If the file contains 1,000 records and 50 records fail, stop processing that file.
-The failure threshold should be configurable.
-If the threshold is reached, rollback the valid records inserted from that file.
-Move the failed file to an error folder.
-Continue processing the other files normally.
-Failure in one file should not stop the processing of other files.
+// ============================================================
+// FILE: application.yml
+// ============================================================
+/*
+file:
+  processing:
+    directory:
+      input: /data/rx/input
+      success: /data/rx/success
+      failure: /data/rx/failure
+    scheduler:
+      interval-minutes: 5
+    batch:
+      size: 50
+    circuit-breaker:
+      threshold: 10
+      cooldown-minutes: 15
+    log:
+      delimiter: "\n"
+*/
 
 
-added scenerios.
- 
-scenario 1. file has 10000 or 1m, or 1L records, now implement (batch inserting) 
-	    while storing in database
-		- make configurable on how much to insert at once.
-		- if error, then whatever is proper should be inserted
- 
-scenario 2. folder has 10 files, each has 10k records. one for endpoint, 
-create batch process, scheduler process, every five minutes, read file location, read all files, and strt executing two files at a time, once done processing, move files into archive location, (just another folder). and then continue with the next two(this is a configurable number) files
- 
-need to prove this is happening parallely
- 
-scenario 3. same application, implement circuit breaker at file level. in file there are some 1000 records, and if 50 records fail(invalid), dont continue the file, rollback , but continue other files.  threshold is configurable.
+// ============================================================
+// FILE: RxParserApplication.java
+// ============================================================
+package com.project.rxparser;
 
-1) batch process with configurable batch size (how many lines to read)
-2) parallel process reading of files in local and then move to archive, run on a scheduler, make number of files read be configurable
-3) circuit breaker in file level in batch process (rollback if failed) keep failure threshold percent
+import com.project.rxparser.scheduler.config.FileProcessingProperties;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
+
+@SpringBootApplication
+@EnableScheduling
+@EnableConfigurationProperties(FileProcessingProperties.class)
+public class RxParserApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(RxParserApplication.class, args);
+    }
+}
+
+
+// ============================================================
+// FILE: FileProcessingProperties.java
+// ============================================================
+package com.project.rxparser.scheduler.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
+
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+
+@ConfigurationProperties(prefix = "file.processing")
+@Validated
+public class FileProcessingProperties {
+
+    private Directory directory = new Directory();
+    private Scheduler scheduler = new Scheduler();
+    private Batch batch = new Batch();
+    private CircuitBreaker circuitBreaker = new CircuitBreaker();
+    private Log log = new Log();
+
+    public static class Directory {
+        @NotBlank
+        private String input;
+        @NotBlank
+        private String success;
+        @NotBlank
+        private String failure;
+
+        public String getInput()   { return input; }
+        public String getSuccess() { return success; }
+        public String getFailure() { return failure; }
+        public void setInput(String v)   { this.input = v; }
+        public void setSuccess(String v) { this.success = v; }
+        public void setFailure(String v) { this.failure = v; }
+    }
+
+    public static class Scheduler {
+        @Min(1)
+        private int intervalMinutes = 5;
+
+        public int getIntervalMinutes() { return intervalMinutes; }
+        public void setIntervalMinutes(int v) { this.intervalMinutes = v; }
+    }
+
+    public static class Batch {
+        @Min(1)
+        private int size = 50;
+
+        public int getSize() { return size; }
+        public void setSize(int v) { this.size = v; }
+    }
+
+    public static class CircuitBreaker {
+        @Min(1)
+        private int threshold = 10;
+        @Min(1)
+        private int cooldownMinutes = 15;
+
+        public int getThreshold()       { return threshold; }
+        public int getCooldownMinutes() { return cooldownMinutes; }
+        public void setThreshold(int v)       { this.threshold = v; }
+        public void setCooldownMinutes(int v) { this.cooldownMinutes = v; }
+    }
+
+    public static class Log {
+        private String delimiter = "\n";
+
+        public String getDelimiter() { return delimiter; }
+        public void setDelimiter(String v) { this.delimiter = v; }
+    }
+
+    public Directory getDirectory()           { return directory; }
+    public Scheduler getScheduler()           { return scheduler; }
+    public Batch getBatch()                   { return batch; }
+    public CircuitBreaker getCircuitBreaker() { return circuitBreaker; }
+    public Log getLog()                       { return log; }
+
+    public void setDirectory(Directory v)           { this.directory = v; }
+    public void setScheduler(Scheduler v)           { this.scheduler = v; }
+    public void setBatch(Batch v)                   { this.batch = v; }
+    public void setCircuitBreaker(CircuitBreaker v) { this.circuitBreaker = v; }
+    public void setLog(Log v)                       { this.log = v; }
+}
+
+
+// ============================================================
+// FILE: EnrichedRecord.java
+// ============================================================
+package com.project.rxparser.scheduler.dto;
+
+import com.project.rxparser.dto.IndexedRecord;
+
+import java.util.List;
+
+/**
+ * An IndexedRecord enriched with extracted log field values.
+ * logValues holds the ordered values of log1, log2, ... fields
+ * from the source JSON (non-null, non-empty only).
+ */
+public record EnrichedRecord(
+        IndexedRecord indexedRecord,
+        List<String> logValues
+) {}
+
+
+// ============================================================
+// FILE: ParseResult.java
+// ============================================================
+package com.project.rxparser.scheduler.dto;
+
+import java.util.List;
+
+/**
+ * Output of the RecordParserService for one file.
+ */
+public record ParseResult(
+        List<EnrichedRecord> validRecords,
+        List<String> invalidRecords      // formatted failure strings with line + reason
+) {}
+
+
+// ============================================================
+// FILE: BatchResult.java
+// ============================================================
+package com.project.rxparser.scheduler.dto;
+
+import java.util.List;
+
+/**
+ * Result of processing one batch.
+ * failedDetails entries are formatted as:
+ * "Line N (memberId=X): reason"
+ */
+public record BatchResult(
+        int successCount,
+        List<String> failedDetails
+) {
+    public int failureCount() {
+        return failedDetails.size();
+    }
+}
+
+
+// ============================================================
+// FILE: FileProcessingResult.java
+// ============================================================
+package com.project.rxparser.scheduler.dto;
+
+import java.util.List;
+
+/**
+ * Final result of processing one file.
+ * Used by FileHandlerService to decide routing and write summaries.
+ */
+public record FileProcessingResult(
+        String fileName,
+        boolean circuitBreakerTripped,
+        int totalValid,
+        int totalInvalid,
+        List<String> parseFailures,    // invalid lines from parse phase
+        List<String> dbFailures,       // failed records from DB phase
+        List<String> logLines          // aggregated log content per valid record
+) {
+    public boolean isSuccess() {
+        return !circuitBreakerTripped;
+    }
+
+    public List<String> allFailures() {
+        var all = new java.util.ArrayList<>(parseFailures);
+        all.addAll(dbFailures);
+        return all;
+    }
+}
+
+
+// ============================================================
+// FILE: RecordParserService.java
+// ============================================================
+package com.project.rxparser.scheduler.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.project.rxparser.dto.IndexedRecord;
+import com.project.rxparser.dto.RawJsonDataDto;
+import com.project.rxparser.scheduler.dto.EnrichedRecord;
+import com.project.rxparser.scheduler.dto.ParseResult;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+
+@Service
+@Slf4j
+public class RecordParserService {
+
+    private final ObjectMapper objectMapper;
+
+    // matches log1, log2, log10, etc.
+    private static final Pattern LOG_FIELD_PATTERN = Pattern.compile("^log\\d+$");
+
+    public RecordParserService(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
+    /**
+     * Reads the file line by line, applies two-level validation:
+     * 1. Core fields (memberId, firstname, lastname, dob, rx, drugName, description) - all non-blank
+     * 2. Log fields (log1, log2, ...) - all present fields must be non-null and non-empty
+     *
+     * Valid records are enriched with their extracted log values.
+     * Invalid records are captured with line number, memberId (if parseable), and reason.
+     */
+    public ParseResult parse(Path filePath) {
+        List<EnrichedRecord> validRecords = new ArrayList<>();
+        List<String> invalidRecords = new ArrayList<>();
+        int lineNumber = 0;
+
+        log.info("[RecordParserService] Parsing file: {}", filePath.getFileName());
+
+        try (BufferedReader reader = Files.newBufferedReader(filePath)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                lineNumber++;
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) continue;
+
+                parseLine(trimmed, lineNumber, validRecords, invalidRecords);
+            }
+        } catch (IOException e) {
+            log.error("[RecordParserService] Failed to read file {}: {}", filePath.getFileName(), e.getMessage());
+            throw new RuntimeException("Failed to read file: " + filePath.getFileName(), e);
+        }
+
+        log.info("[RecordParserService] Parse complete — {} valid, {} invalid",
+                validRecords.size(), invalidRecords.size());
+
+        return new ParseResult(validRecords, invalidRecords);
+    }
+
+    private void parseLine(String line, int lineNumber,
+                           List<EnrichedRecord> validRecords,
+                           List<String> invalidRecords) {
+        JsonNode node;
+        try {
+            node = objectMapper.readTree(line);
+        } catch (Exception e) {
+            invalidRecords.add(formatFailure(lineNumber, null, "Malformed JSON: " + e.getMessage()));
+            return;
+        }
+
+        // extract core fields
+        String memberId     = textOrNull(node, "memberId");
+        String firstname    = textOrNull(node, "firstname");
+        String lastname     = textOrNull(node, "lastname");
+        String dob          = textOrNull(node, "dob");
+        String rx           = textOrNull(node, "rx");
+        String drugName     = textOrNull(node, "drugName");
+        String description  = textOrNull(node, "description");
+
+        // Level 1 — core field validation
+        String coreFailure = validateCoreFields(memberId, firstname, lastname, dob, rx, drugName, description);
+        if (coreFailure != null) {
+            invalidRecords.add(formatFailure(lineNumber, memberId, coreFailure));
+            return;
+        }
+
+        // Level 2 — log field validation
+        List<String> logValues = new ArrayList<>();
+        String logFailure = validateAndExtractLogFields(node, logValues);
+        if (logFailure != null) {
+            invalidRecords.add(formatFailure(lineNumber, memberId, logFailure));
+            return;
+        }
+
+        RawJsonDataDto dto = new RawJsonDataDto(memberId, firstname, lastname, dob, rx, drugName, description);
+        IndexedRecord indexedRecord = new IndexedRecord(lineNumber, dto);
+        validRecords.add(new EnrichedRecord(indexedRecord, logValues));
+    }
+
+    private String validateCoreFields(String memberId, String firstname, String lastname,
+                                       String dob, String rx, String drugName, String description) {
+        if (isBlank(memberId))    return "Missing or blank: memberId";
+        if (isBlank(firstname))   return "Missing or blank: firstname";
+        if (isBlank(lastname))    return "Missing or blank: lastname";
+        if (isBlank(dob))         return "Missing or blank: dob";
+        if (isBlank(rx))          return "Missing or blank: rx";
+        if (isBlank(drugName))    return "Missing or blank: drugName";
+        if (isBlank(description)) return "Missing or blank: description";
+        return null;
+    }
+
+    /**
+     * Iterates all fields in the JSON node.
+     * Any field matching log\d+ must be non-null and non-empty.
+     * Valid log values are collected into logValues in field-name order.
+     */
+    private String validateAndExtractLogFields(JsonNode node, List<String> logValues) {
+        // collect log fields in sorted order (log1 before log2 before log10)
+        List<Map.Entry<String, JsonNode>> logFields = new ArrayList<>();
+
+        Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> field = fields.next();
+            if (LOG_FIELD_PATTERN.matcher(field.getKey()).matches()) {
+                logFields.add(field);
+            }
+        }
+
+        // sort by numeric suffix: log1, log2, log10 ...
+        logFields.sort((a, b) -> {
+            int numA = Integer.parseInt(a.getKey().substring(3));
+            int numB = Integer.parseInt(b.getKey().substring(3));
+            return Integer.compare(numA, numB);
+        });
+
+        for (Map.Entry<String, JsonNode> entry : logFields) {
+            String key = entry.getKey();
+            JsonNode value = entry.getValue();
+
+            if (value == null || value.isNull() || value.asText().isBlank()) {
+                return "Log field '" + key + "' is null or empty";
+            }
+
+            logValues.add(value.asText());
+        }
+
+        return null;
+    }
+
+    private String textOrNull(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull()) return null;
+        String text = value.asText();
+        return text.isBlank() ? null : text;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private String formatFailure(int lineNumber, String memberId, String reason) {
+        String memberPart = memberId != null ? " (memberId=" + memberId + ")" : "";
+        return "Line " + lineNumber + memberPart + ": " + reason;
+    }
+}
+
+
+// ============================================================
+// FILE: BatchTransactionService.java
+// ============================================================
+package com.project.rxparser.scheduler.service;
+
+import com.project.rxparser.dto.IndexedRecord;
+import com.project.rxparser.dto.RawJsonDataDto;
+import com.project.rxparser.model.MembershipInfo;
+import com.project.rxparser.model.RxInfo;
+import com.project.rxparser.repository.MembershipInfoRepository;
+import com.project.rxparser.scheduler.dto.BatchResult;
+import com.project.rxparser.scheduler.dto.EnrichedRecord;
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Service
+@Slf4j
+public class BatchTransactionService {
+
+    private final MembershipInfoRepository membershipRepository;
+    private final EntityManager entityManager;
+
+    public BatchTransactionService(MembershipInfoRepository membershipRepository,
+                                   EntityManager entityManager) {
+        this.membershipRepository = membershipRepository;
+        this.entityManager = entityManager;
+    }
+
+    /**
+     * Two-pass insert for one batch, runs in its own independent transaction.
+     *
+     * Pass 1 — attempt saveAll() for the entire batch.
+     *   If it succeeds, commit and return.
+     *   If it throws, rollback and fall through to pass 2.
+     *
+     * Pass 2 — save each member individually.
+     *   Successes commit. Failures are captured and added to failedDetails.
+     *   The batch transaction continues regardless of individual failures.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public BatchResult saveBatch(List<EnrichedRecord> batch) {
+
+        // group by memberId so we process all rx for one member together
+        Map<String, List<IndexedRecord>> groupedByMember = batch.stream()
+                .collect(Collectors.groupingBy(
+                        enriched -> enriched.indexedRecord().data().memberId(),
+                        LinkedHashMap::new,
+                        Collectors.mapping(EnrichedRecord::indexedRecord, Collectors.toList())
+                ));
+
+        // Pass 1 — bulk attempt
+        try {
+            log.debug("[BatchTransactionService] Pass 1 — attempting bulk save for {} members", groupedByMember.size());
+            List<MembershipInfo> members = buildMemberEntities(groupedByMember);
+            membershipRepository.saveAll(members);
+            entityManager.flush();
+            entityManager.clear();
+            log.debug("[BatchTransactionService] Pass 1 succeeded — {} members saved", members.size());
+            return new BatchResult(batch.size(), Collections.emptyList());
+
+        } catch (Exception e) {
+            log.warn("[BatchTransactionService] Pass 1 failed ({}), falling back to individual saves", e.getMessage());
+            entityManager.clear(); // wipe dirty state before pass 2
+        }
+
+        // Pass 2 — individual fallback
+        return individualFallback(groupedByMember);
+    }
+
+    /**
+     * Pass 2 — saves each member individually, capturing failures without stopping.
+     * Each member gets its own flush/clear cycle so a failure doesn't contaminate the next.
+     */
+    private BatchResult individualFallback(Map<String, List<IndexedRecord>> groupedByMember) {
+
+        log.debug("[BatchTransactionService] Pass 2 — individual save for {} members", groupedByMember.size());
+
+        List<String> failedDetails = new ArrayList<>();
+        int successCount = 0;
+
+        for (Map.Entry<String, List<IndexedRecord>> entry : groupedByMember.entrySet()) {
+            String memberId = entry.getKey();
+            List<IndexedRecord> records = entry.getValue();
+
+            try {
+                saveSingleMember(memberId, records);
+                entityManager.flush();
+                entityManager.clear();
+                successCount += records.size();
+                log.debug("[BatchTransactionService] Pass 2 — member {} saved", memberId);
+
+            } catch (Exception e) {
+                entityManager.clear();
+                records.forEach(r -> failedDetails.add(
+                        formatFailure(r.lineNumber(), memberId, e.getMessage())
+                ));
+                log.warn("[BatchTransactionService] Pass 2 — member {} failed: {}", memberId, e.getMessage());
+            }
+        }
+
+        return new BatchResult(successCount, failedDetails);
+    }
+
+    private List<MembershipInfo> buildMemberEntities(Map<String, List<IndexedRecord>> groupedByMember) {
+
+        // fetch all existing members in one IN query
+        List<Long> memberIds = groupedByMember.keySet().stream()
+                .map(Long::parseLong)
+                .toList();
+
+        Map<Long, MembershipInfo> existingMembers = membershipRepository.findAllById(memberIds)
+                .stream()
+                .collect(Collectors.toMap(MembershipInfo::getMemberId, m -> m));
+
+        List<MembershipInfo> result = new ArrayList<>();
+
+        groupedByMember.forEach((memberId, records) -> {
+            long id = Long.parseLong(memberId);
+            MembershipInfo member = existingMembers.getOrDefault(id, createNewMember(records.getFirst().data()));
+
+            Set<String> seenRx = member.getRxInfo().stream()
+                    .map(RxInfo::getRx)
+                    .collect(Collectors.toCollection(HashSet::new));
+
+            for (IndexedRecord record : records) {
+                String rx = record.data().rx();
+                if (seenRx.contains(rx)) {
+                    log.debug("[BatchTransactionService] Skipping duplicate rx {} for member {}", rx, memberId);
+                    continue;
+                }
+                member.getRxInfo().add(buildRxInfo(record.data(), member));
+                seenRx.add(rx);
+            }
+
+            result.add(member);
+        });
+
+        return result;
+    }
+
+    private void saveSingleMember(String memberId, List<IndexedRecord> records) {
+
+        long id = Long.parseLong(memberId);
+
+        MembershipInfo member = membershipRepository.findById(id)
+                .orElseGet(() -> createNewMember(records.getFirst().data()));
+
+        Set<String> seenRx = member.getRxInfo().stream()
+                .map(RxInfo::getRx)
+                .collect(Collectors.toCollection(HashSet::new));
+
+        for (IndexedRecord record : records) {
+            String rx = record.data().rx();
+            if (seenRx.contains(rx)) {
+                log.debug("[BatchTransactionService] Skipping duplicate rx {} for member {}", rx, memberId);
+                continue;
+            }
+            member.getRxInfo().add(buildRxInfo(record.data(), member));
+            seenRx.add(rx);
+        }
+
+        entityManager.merge(member);
+    }
+
+    private MembershipInfo createNewMember(RawJsonDataDto data) {
+        MembershipInfo m = new MembershipInfo();
+        m.setMemberId(Long.parseLong(data.memberId()));
+        m.setFirstName(data.firstname());
+        m.setLastName(data.lastname());
+        m.setDob(data.dob());
+        return m;
+    }
+
+    private RxInfo buildRxInfo(RawJsonDataDto data, MembershipInfo member) {
+        RxInfo rxInfo = new RxInfo();
+        rxInfo.setRx(data.rx());
+        rxInfo.setDrugName(data.drugName());
+        rxInfo.setDescription(data.description());
+        rxInfo.setMember(member);
+        return rxInfo;
+    }
+
+    private String formatFailure(int lineNumber, String memberId, String reason) {
+        return "Line " + lineNumber + " (memberId=" + memberId + "): " + reason;
+    }
+}
+
+
+// ============================================================
+// FILE: BatchPersisterService.java
+// ============================================================
+package com.project.rxparser.scheduler.service;
+
+import com.project.rxparser.scheduler.config.FileProcessingProperties;
+import com.project.rxparser.scheduler.dto.BatchResult;
+import com.project.rxparser.scheduler.dto.EnrichedRecord;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Partitions valid records into batches of configurable size and
+ * drives the two-pass insert strategy via BatchTransactionService.
+ *
+ * Also checks the circuit breaker after each batch — if a batch exceeds
+ * the failure threshold, processing stops immediately and the caller
+ * is informed via the returned flag.
+ */
+@Service
+@Slf4j
+public class BatchPersisterService {
+
+    private final BatchTransactionService batchTransactionService;
+    private final CircuitBreakerService circuitBreakerService;
+    private final FileProcessingProperties properties;
+
+    public BatchPersisterService(BatchTransactionService batchTransactionService,
+                                 CircuitBreakerService circuitBreakerService,
+                                 FileProcessingProperties properties) {
+        this.batchTransactionService = batchTransactionService;
+        this.circuitBreakerService = circuitBreakerService;
+        this.properties = properties;
+    }
+
+    /**
+     * Processes all valid records in batches.
+     * Returns a PersistenceOutcome containing all DB failure details and whether
+     * the circuit breaker was tripped.
+     */
+    public PersistenceOutcome persist(List<EnrichedRecord> records, String fileName) {
+
+        int batchSize = properties.getBatch().getSize();
+        int total = records.size();
+        List<String> allFailures = new ArrayList<>();
+
+        log.info("[BatchPersisterService] Starting — {} records, batch size: {}", total, batchSize);
+
+        for (int i = 0; i < total; i += batchSize) {
+            int end = Math.min(i + batchSize, total);
+            List<EnrichedRecord> batch = records.subList(i, end);
+            int batchNumber = (i / batchSize) + 1;
+
+            log.info("[BatchPersisterService] Batch {} — records {}-{} of {}", batchNumber, i + 1, end, total);
+
+            BatchResult result = batchTransactionService.saveBatch(batch);
+            allFailures.addAll(result.failedDetails());
+
+            if (result.failedDetails().isEmpty()) {
+                log.info("[BatchPersisterService] Batch {} committed successfully — {} records saved",
+                        batchNumber, result.successCount());
+            } else {
+                log.warn("[BatchPersisterService] Batch {} completed with {} failure(s)",
+                        batchNumber, result.failureCount());
+            }
+
+            // check circuit breaker after every batch
+            if (circuitBreakerService.checkAndTrip(result.failureCount(), fileName)) {
+                log.warn("[BatchPersisterService] Circuit breaker tripped on batch {} — stopping file processing", batchNumber);
+                return new PersistenceOutcome(allFailures, true);
+            }
+        }
+
+        log.info("[BatchPersisterService] Complete — total DB failures: {}/{}", allFailures.size(), total);
+        return new PersistenceOutcome(allFailures, false);
+    }
+
+    /**
+     * Result of the full persistence run for one file.
+     */
+    public record PersistenceOutcome(
+            List<String> dbFailures,
+            boolean circuitBreakerTripped
+    ) {}
+}
+
+
+// ============================================================
+// FILE: CircuitBreakerService.java
+// ============================================================
+package com.project.rxparser.scheduler.service;
+
+import com.project.rxparser.scheduler.config.FileProcessingProperties;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * Manages the circuit breaker state for the scheduler.
+ *
+ * The circuit breaker is NOT per-file — it is a global scheduler-level switch.
+ * When a file trips it, no new files are picked up until cooldown expires.
+ * The per-file nature is that the current file being processed tracks its own
+ * batch failure counts, and trips the breaker when threshold is exceeded.
+ *
+ * State transitions:
+ *   CLOSED (normal) → OPEN (tripped) → after cooldown → CLOSED
+ */
+@Service
+@Slf4j
+public class CircuitBreakerService {
+
+    private final FileProcessingProperties properties;
+
+    // when non-null, the breaker is open and this is when it was tripped
+    private final AtomicReference<LocalDateTime> trippedAt = new AtomicReference<>(null);
+
+    public CircuitBreakerService(FileProcessingProperties properties) {
+        this.properties = properties;
+    }
+
+    /**
+     * Returns true if the circuit breaker is currently open (cooling down).
+     * Automatically resets to CLOSED if cooldown has elapsed.
+     */
+    public boolean isOpen() {
+        LocalDateTime trippedTime = trippedAt.get();
+        if (trippedTime == null) return false;
+
+        int cooldownMinutes = properties.getCircuitBreaker().getCooldownMinutes();
+        boolean cooldownExpired = LocalDateTime.now().isAfter(trippedTime.plusMinutes(cooldownMinutes));
+
+        if (cooldownExpired) {
+            log.info("[CircuitBreakerService] Cooldown of {}min expired, resetting to CLOSED", cooldownMinutes);
+            trippedAt.set(null);
+            return false;
+        }
+
+        LocalDateTime resumeAt = trippedTime.plusMinutes(cooldownMinutes);
+        log.info("[CircuitBreakerService] Still in cooldown — resumes at {}", resumeAt);
+        return true;
+    }
+
+    /**
+     * Checks whether the failure count from a single batch exceeds the threshold.
+     * If so, trips the breaker.
+     */
+    public boolean checkAndTrip(int batchFailureCount, String fileName) {
+        int threshold = properties.getCircuitBreaker().getThreshold();
+
+        if (batchFailureCount >= threshold) {
+            trip(fileName, batchFailureCount, threshold);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Opens the circuit breaker and starts the cooldown timer.
+     */
+    public void trip(String fileName, int failureCount, int threshold) {
+        LocalDateTime now = LocalDateTime.now();
+        trippedAt.set(now);
+
+        log.warn("[CircuitBreakerService] TRIPPED — file: {}, failures: {}, threshold: {}, cooldown: {}min",
+                fileName, failureCount, threshold,
+                properties.getCircuitBreaker().getCooldownMinutes());
+    }
+
+    /**
+     * How long remains on cooldown, in seconds. Returns 0 if not open.
+     */
+    public long remainingCooldownSeconds() {
+        LocalDateTime trippedTime = trippedAt.get();
+        if (trippedTime == null) return 0;
+
+        int cooldownMinutes = properties.getCircuitBreaker().getCooldownMinutes();
+        LocalDateTime resumeAt = trippedTime.plusMinutes(cooldownMinutes);
+        long remaining = java.time.Duration.between(LocalDateTime.now(), resumeAt).getSeconds();
+        return Math.max(0, remaining);
+    }
+}
+
+
+// ============================================================
+// FILE: LogAggregatorService.java
+// ============================================================
+package com.project.rxparser.scheduler.service;
+
+import com.project.rxparser.scheduler.config.FileProcessingProperties;
+import com.project.rxparser.scheduler.dto.EnrichedRecord;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Aggregates log field values from all valid records in a file into a single list of strings.
+ * Each string represents the combined log output for one record.
+ *
+ * Only valid (successfully parsed) records contribute to the log.
+ * Invalid records and circuit-breaker-tripped files produce no log output.
+ */
+@Service
+@Slf4j
+public class LogAggregatorService {
+
+    private final FileProcessingProperties properties;
+
+    public LogAggregatorService(FileProcessingProperties properties) {
+        this.properties = properties;
+    }
+
+    /**
+     * For each enriched record, join its logValues with the configured delimiter.
+     * Returns one entry per record (even if the record has only one log field).
+     * Records with no log fields produce an empty string entry — callers may filter if needed.
+     */
+    public List<String> aggregate(List<EnrichedRecord> validRecords) {
+        String delimiter = properties.getLog().getDelimiter();
+        List<String> aggregated = new ArrayList<>();
+
+        for (EnrichedRecord enriched : validRecords) {
+            List<String> logValues = enriched.logValues();
+            if (logValues.isEmpty()) continue;
+
+            String entry = String.join(delimiter, logValues);
+            aggregated.add(entry);
+        }
+
+        log.debug("[LogAggregatorService] Aggregated log entries for {} valid records", aggregated.size());
+        return aggregated;
+    }
+}
+
+
+// ============================================================
+// FILE: FileHandlerService.java
+// ============================================================
+package com.project.rxparser.scheduler.service;
+
+import com.project.rxparser.scheduler.config.FileProcessingProperties;
+import com.project.rxparser.scheduler.dto.FileProcessingResult;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.nio.file.*;
+import java.util.List;
+
+/**
+ * Handles final file routing after processing:
+ *
+ * Success path:
+ *   - Move .txt file to success folder
+ *   - Write .summary file listing all failed record details
+ *   - Write .log file with aggregated log content
+ *
+ * Failure path (circuit breaker tripped):
+ *   - Move .txt file to failure folder
+ *   - No summary, no log file
+ */
+@Service
+@Slf4j
+public class FileHandlerService {
+
+    private final FileProcessingProperties properties;
+
+    public FileHandlerService(FileProcessingProperties properties) {
+        this.properties = properties;
+    }
+
+    public void handle(Path sourceFile, FileProcessingResult result) {
+        if (result.isSuccess()) {
+            handleSuccess(sourceFile, result);
+        } else {
+            handleFailure(sourceFile, result);
+        }
+    }
+
+    private void handleSuccess(Path sourceFile, FileProcessingResult result) {
+        Path successDir = Path.of(properties.getDirectory().getSuccess());
+        ensureDirectoryExists(successDir);
+
+        String fileName = sourceFile.getFileName().toString();
+        Path destination = successDir.resolve(fileName);
+
+        moveFile(sourceFile, destination);
+
+        writeSummary(successDir, fileName, result.allFailures());
+
+        if (!result.logLines().isEmpty()) {
+            writeLogFile(successDir, fileName, result.logLines());
+        }
+
+        log.info("[FileHandlerService] File {} moved to success folder. Total failures: {}",
+                fileName, result.allFailures().size());
+    }
+
+    private void handleFailure(Path sourceFile, FileProcessingResult result) {
+        Path failureDir = Path.of(properties.getDirectory().getFailure());
+        ensureDirectoryExists(failureDir);
+
+        String fileName = sourceFile.getFileName().toString();
+        Path destination = failureDir.resolve(fileName);
+
+        moveFile(sourceFile, destination);
+
+        log.warn("[FileHandlerService] File {} moved to failure folder — circuit breaker was tripped", fileName);
+    }
+
+    /**
+     * Writes a .summary file listing all failed record details (parse + DB failures).
+     * Written alongside the moved .txt file in the success folder.
+     */
+    private void writeSummary(Path directory, String originalFileName, List<String> failures) {
+        if (failures.isEmpty()) return;
+
+        String summaryFileName = originalFileName.replace(".txt", ".summary");
+        Path summaryPath = directory.resolve(summaryFileName);
+
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== Failed Records Summary ===\n");
+            sb.append("Total failures: ").append(failures.size()).append("\n\n");
+            failures.forEach(f -> sb.append(f).append("\n"));
+
+            Files.writeString(summaryPath, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            log.info("[FileHandlerService] Summary written: {}", summaryFileName);
+
+        } catch (IOException e) {
+            log.error("[FileHandlerService] Failed to write summary file {}: {}", summaryFileName, e.getMessage());
+        }
+    }
+
+    /**
+     * Writes the aggregated .log file into the success folder.
+     * Each entry in logLines is one record's joined log values.
+     */
+    private void writeLogFile(Path directory, String originalFileName, List<String> logLines) {
+        String logFileName = originalFileName.replace(".txt", ".log");
+        Path logPath = directory.resolve(logFileName);
+
+        try {
+            String delimiter = "\n---\n"; // visual separator between records in the log file
+            String content = String.join(delimiter, logLines);
+            Files.writeString(logPath, content, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            log.info("[FileHandlerService] Log file written: {} ({} entries)", logFileName, logLines.size());
+
+        } catch (IOException e) {
+            log.error("[FileHandlerService] Failed to write log file {}: {}", logFileName, e.getMessage());
+        }
+    }
+
+    /**
+     * Moves a file atomically where the OS supports it.
+     * Falls back to REPLACE_EXISTING if atomic move is not supported (cross-device).
+     */
+    private void moveFile(Path source, Path destination) {
+        try {
+            Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE);
+            log.debug("[FileHandlerService] Moved {} → {}", source.getFileName(), destination);
+
+        } catch (AtomicMoveNotSupportedException e) {
+            try {
+                Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
+                log.debug("[FileHandlerService] Moved (non-atomic) {} → {}", source.getFileName(), destination);
+            } catch (IOException ex) {
+                log.error("[FileHandlerService] Failed to move file {}: {}", source.getFileName(), ex.getMessage());
+                throw new RuntimeException("Failed to move file: " + source.getFileName(), ex);
+            }
+        } catch (IOException e) {
+            log.error("[FileHandlerService] Failed to move file {}: {}", source.getFileName(), e.getMessage());
+            throw new RuntimeException("Failed to move file: " + source.getFileName(), e);
+        }
+    }
+
+    private void ensureDirectoryExists(Path dir) {
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+            throw new RuntimeException("Could not create directory: " + dir, e);
+        }
+    }
+}
+
+
+// ============================================================
+// FILE: FileProcessorService.java
+// ============================================================
+package com.project.rxparser.scheduler.service;
+
+import com.project.rxparser.scheduler.dto.EnrichedRecord;
+import com.project.rxparser.scheduler.dto.FileProcessingResult;
+import com.project.rxparser.scheduler.dto.ParseResult;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.nio.file.Path;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Orchestrates processing of a single file end to end:
+ *
+ *  1. Parse + validate (RecordParserService)
+ *  2. Persist valid records in batches (BatchPersisterService)
+ *  3. Aggregate log entries (LogAggregatorService)
+ *  4. Route file and write outputs (FileHandlerService)
+ *
+ * If the circuit breaker trips during step 2, steps 3 and 4 produce
+ * no log file and the file is moved to the failure folder.
+ */
+@Service
+@Slf4j
+public class FileProcessorService {
+
+    private final RecordParserService parserService;
+    private final BatchPersisterService persisterService;
+    private final LogAggregatorService logAggregatorService;
+    private final FileHandlerService fileHandlerService;
+
+    public FileProcessorService(RecordParserService parserService,
+                                BatchPersisterService persisterService,
+                                LogAggregatorService logAggregatorService,
+                                FileHandlerService fileHandlerService) {
+        this.parserService = parserService;
+        this.persisterService = persisterService;
+        this.logAggregatorService = logAggregatorService;
+        this.fileHandlerService = fileHandlerService;
+    }
+
+    public void process(Path filePath) {
+        String fileName = filePath.getFileName().toString();
+        log.info("[FileProcessorService] ===== Processing file: {} =====", fileName);
+
+        long start = System.currentTimeMillis();
+
+        // Step 1 — parse and validate
+        ParseResult parseResult = parserService.parse(filePath);
+        List<EnrichedRecord> validRecords = parseResult.validRecords();
+        List<String> parseFailures = parseResult.invalidRecords();
+
+        log.info("[FileProcessorService] Parse complete — {} valid, {} invalid",
+                validRecords.size(), parseFailures.size());
+
+        // Step 2 — persist in batches
+        BatchPersisterService.PersistenceOutcome outcome = persisterService.persist(validRecords, fileName);
+
+        // Step 3 — aggregate logs (only if circuit breaker did not trip)
+        List<String> logLines = Collections.emptyList();
+        if (!outcome.circuitBreakerTripped()) {
+            logLines = logAggregatorService.aggregate(validRecords);
+        }
+
+        // Step 4 — build result and route file
+        FileProcessingResult result = new FileProcessingResult(
+                fileName,
+                outcome.circuitBreakerTripped(),
+                validRecords.size(),
+                parseFailures.size(),
+                parseFailures,
+                outcome.dbFailures(),
+                logLines
+        );
+
+        fileHandlerService.handle(filePath, result);
+
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[FileProcessorService] ===== Finished: {} in {}ms — success={}, parseFailures={}, dbFailures={} =====",
+                fileName, elapsed, result.isSuccess(), parseFailures.size(), outcome.dbFailures().size());
+    }
+}
+
+
+// ============================================================
+// FILE: FileWatcherService.java
+// ============================================================
+package com.project.rxparser.scheduler.service;
+
+import com.project.rxparser.scheduler.config.FileProcessingProperties;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.nio.file.*;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
+
+/**
+ * Scans the input directory on a configurable schedule.
+ * Picks one .txt file at a time, processes it fully, then picks the next.
+ *
+ * Uses an AtomicBoolean lock so that if a previous run is still processing
+ * (possible with short intervals), the new trigger is skipped cleanly.
+ *
+ * Respects the circuit breaker cooldown — if it is open, the scan runs
+ * but no files are processed.
+ */
+@Service
+@Slf4j
+public class FileWatcherService {
+
+    private final FileProcessorService fileProcessorService;
+    private final CircuitBreakerService circuitBreakerService;
+    private final FileProcessingProperties properties;
+
+    // prevents overlapping runs if processing takes longer than the interval
+    private final AtomicBoolean processing = new AtomicBoolean(false);
+
+    public FileWatcherService(FileProcessorService fileProcessorService,
+                              CircuitBreakerService circuitBreakerService,
+                              FileProcessingProperties properties) {
+        this.fileProcessorService = fileProcessorService;
+        this.circuitBreakerService = circuitBreakerService;
+        this.properties = properties;
+    }
+
+    /**
+     * Fixed-delay schedule — next run starts N minutes after the previous run completes.
+     * The delay is read from properties at startup via SpEL.
+     *
+     * Using fixedDelayString rather than fixedRateString means there is no pile-up
+     * of queued invocations if processing takes longer than the interval.
+     */
+    @Scheduled(fixedDelayString = "#{@fileProcessingProperties.scheduler.intervalMinutes * 60000}")
+    public void scan() {
+
+        if (!processing.compareAndSet(false, true)) {
+            log.info("[FileWatcherService] Previous run still in progress, skipping this trigger");
+            return;
+        }
+
+        try {
+            if (circuitBreakerService.isOpen()) {
+                log.info("[FileWatcherService] Circuit breaker is open — skipping scan ({}s remaining)",
+                        circuitBreakerService.remainingCooldownSeconds());
+                return;
+            }
+
+            Path inputDir = Path.of(properties.getDirectory().getInput());
+            List<Path> files = listTxtFiles(inputDir);
+
+            if (files.isEmpty()) {
+                log.debug("[FileWatcherService] No .txt files found in {}", inputDir);
+                return;
+            }
+
+            log.info("[FileWatcherService] Found {} file(s) to process", files.size());
+
+            for (Path file : files) {
+                // re-check circuit breaker before each file — a file processed
+                // earlier in this same scan may have tripped it
+                if (circuitBreakerService.isOpen()) {
+                    log.warn("[FileWatcherService] Circuit breaker tripped mid-scan — stopping after current file");
+                    break;
+                }
+
+                fileProcessorService.process(file);
+            }
+
+        } finally {
+            processing.set(false);
+        }
+    }
+
+    private List<Path> listTxtFiles(Path directory) {
+        try {
+            Files.createDirectories(directory);
+            try (Stream<Path> stream = Files.list(directory)) {
+                return stream
+                        .filter(Files::isRegularFile)
+                        .filter(p -> p.toString().endsWith(".txt"))
+                        .sorted() // alphabetical order — deterministic pickup sequence
+                        .toList();
+            }
+        } catch (IOException e) {
+            log.error("[FileWatcherService] Failed to list directory {}: {}", directory, e.getMessage());
+            return List.of();
+        }
+    }
+}
+
